@@ -74,7 +74,7 @@ public class PacketSignatory {
             com.hierynomus.security.Mac mac = getMac(secretKey, algorithm, securityProvider);
             mac.update(buffer.array(), packet.getMessageStartPos(), SIGNATURE_OFFSET);
             mac.update(EMPTY_SIGNATURE);
-            mac.update(buffer.array(), STRUCTURE_SIZE, packet.getMessageEndPos() - STRUCTURE_SIZE);
+            mac.update(buffer.array(), STRUCTURE_SIZE, buffer.array().length - STRUCTURE_SIZE);
             byte[] signature = mac.doFinal();
             byte[] receivedSignature = Arrays.copyOfRange(buffer.array(), SIGNATURE_OFFSET, STRUCTURE_SIZE);
             for (int i = 0; i < SIGNATURE_SIZE; i++) {
