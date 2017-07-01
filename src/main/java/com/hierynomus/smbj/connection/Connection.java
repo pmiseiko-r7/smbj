@@ -87,13 +87,6 @@ public class Connection implements AutoCloseable, PacketReceiver<SMB2Packet> {
 
     @Override
     public void close() throws Exception {
-        for (Session session : connectionInfo.getSessionTable().activeSessions()) {
-            try {
-                session.close();
-            } catch (IOException e) {
-                logger.warn("Exception while closing session {}", session.getSessionId(), e);
-            }
-        }
         logger.info("Closed connection to {}", getRemoteHostname());
         transport.disconnect();
     }
