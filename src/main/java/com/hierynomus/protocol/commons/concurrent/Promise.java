@@ -18,8 +18,6 @@ package com.hierynomus.protocol.commons.concurrent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.Condition;
@@ -120,8 +118,7 @@ public class Promise<V, T extends Throwable> {
      * @return the value
      * @throws T in case another thread informs the promise of an error meanwhile
      */
-    public V retrieve()
-        throws T {
+    public V retrieve() throws T {
         return tryRetrieve(0, TimeUnit.SECONDS);
     }
 
@@ -133,13 +130,13 @@ public class Promise<V, T extends Throwable> {
      * @return the value
      * @throws T in case another thread informs the promise of an error meanwhile, or the timeout expires
      */
-    public V retrieve(long timeout, TimeUnit unit)
-        throws T {
+    public V retrieve(long timeout, TimeUnit unit) throws T {
         final V value = tryRetrieve(timeout, unit);
-        if (value == null)
+        if (value == null) {
             throw wrapper.wrap(new TimeoutException("Timeout expired"));
-        else
+        } else {
             return value;
+        }
     }
 
     /**
@@ -256,42 +253,7 @@ public class Promise<V, T extends Throwable> {
     }
 
 
-    public Future<V> future() {
-        return new Future<V>() {
-            @Override
-            public boolean cancel(boolean mayInterruptIfRunning) {
-                // TODO
-                return false;
-            }
-
-            @Override
-            public boolean isCancelled() {
-                // TODO
-                return false;
-            }
-
-            @Override
-            public boolean isDone() {
-                return Promise.this.isDelivered();
-            }
-
-            @Override
-            public V get() throws InterruptedException, ExecutionException {
-                try {
-                    return Promise.this.retrieve();
-                } catch (Throwable t) {
-                    throw new ExecutionException(t);
-                }
-            }
-
-            @Override
-            public V get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
-                try {
-                    return Promise.this.retrieve(timeout, unit);
-                } catch (Throwable t) {
-                    throw new ExecutionException(t);
-                }
-            }
-        };
+    public AFuture<V> future() {
+        return new PromiseBackedFuture<>(this);
     }
 }

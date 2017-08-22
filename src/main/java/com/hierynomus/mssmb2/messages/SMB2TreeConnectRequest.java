@@ -19,7 +19,7 @@ import com.hierynomus.mssmb2.SMB2Dialect;
 import com.hierynomus.mssmb2.SMB2Header;
 import com.hierynomus.mssmb2.SMB2MessageCommandCode;
 import com.hierynomus.mssmb2.SMB2Packet;
-import com.hierynomus.smbj.common.SMBBuffer;
+import com.hierynomus.smb.SMBBuffer;
 import com.hierynomus.smbj.common.SmbPath;
 
 /**
@@ -53,5 +53,21 @@ public class SMB2TreeConnectRequest extends SMB2Packet {
         } else {
             buffer.putReserved2();
         }
+    }
+
+    /**
+     * Needed for DFS resolution
+     * @return
+     */
+    public SmbPath getSmbPath() {
+        return smbPath;
+    }
+
+    /**
+     * Needed for DFS resolution
+     * @param smbPath The resolved SMB Path
+     */
+    public void setSmbPath(SmbPath smbPath) {
+        this.smbPath = smbPath;
     }
 }

@@ -22,21 +22,17 @@ import com.hierynomus.mserref.NtStatus;
 import com.hierynomus.msfscc.FileAttributes;
 import com.hierynomus.msfscc.FileSystemInformationClass;
 import com.hierynomus.msfscc.fileinformation.*;
-import com.hierynomus.mssmb2.SMB2CreateDisposition;
-import com.hierynomus.mssmb2.SMB2CreateOptions;
-import com.hierynomus.mssmb2.SMB2FileId;
-import com.hierynomus.mssmb2.SMB2ShareAccess;
+import com.hierynomus.mssmb2.*;
 import com.hierynomus.mssmb2.messages.SMB2CreateResponse;
 import com.hierynomus.mssmb2.messages.SMB2QueryInfoRequest;
 import com.hierynomus.mssmb2.messages.SMB2SetInfoRequest;
 import com.hierynomus.protocol.commons.EnumWithValue;
 import com.hierynomus.protocol.commons.buffer.Buffer;
 import com.hierynomus.protocol.commons.buffer.Endian;
-import com.hierynomus.smbj.common.SMBApiException;
-import com.hierynomus.smbj.common.SMBBuffer;
+import com.hierynomus.protocol.transport.TransportException;
+import com.hierynomus.smb.SMBBuffer;
 import com.hierynomus.smbj.common.SMBRuntimeException;
 import com.hierynomus.smbj.common.SmbPath;
-import com.hierynomus.smbj.transport.TransportException;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -57,6 +53,10 @@ public class DiskShare extends Share {
 
     public DiskEntry open(String path, Set<AccessMask> accessMask, Set<FileAttributes> attributes, Set<SMB2ShareAccess> shareAccesses, SMB2CreateDisposition createDisposition, Set<SMB2CreateOptions> createOptions) {
         SMB2CreateResponse response = createFile(path, null, accessMask, attributes, shareAccesses, createDisposition, createOptions);
+        return getDiskEntry(path, response);
+    }
+
+    protected DiskEntry getDiskEntry(String path, SMB2CreateResponse response) {
         if (response.getFileAttributes().contains(FILE_ATTRIBUTE_DIRECTORY)) {
             return new Directory(response.getFileId(), this, path);
         } else {
@@ -118,7 +118,7 @@ public class DiskShare extends Share {
     }
 
     private boolean exists(String path, EnumSet<SMB2CreateOptions> createOptions) throws SMBApiException {
-        try (DiskEntry ignored = open(path, EnumSet.of(FILE_READ_ATTRIBUTES), EnumSet.of(FILE_ATTRIBUTE_NORMAL), ALL, FILE_OPEN, createOptions)){
+        try (DiskEntry ignored = open(path, EnumSet.of(FILE_READ_ATTRIBUTES), EnumSet.of(FILE_ATTRIBUTE_NORMAL), ALL, FILE_OPEN, createOptions)) {
             return true;
         } catch (SMBApiException sae) {
             if (sae.getStatus() == NtStatus.STATUS_OBJECT_NAME_NOT_FOUND || sae.getStatus() == NtStatus.STATUS_OBJECT_PATH_NOT_FOUND) {
@@ -174,7 +174,7 @@ public class DiskShare extends Share {
         Directory fileHandle = openDirectory(
             path,
             EnumSet.of(FILE_LIST_DIRECTORY, FILE_ADD_SUBDIRECTORY),
-            EnumSet.of(FileAttributes.FILE_ATTRIBUTE_DIRECTORY),
+            EnumSet.of(FILE_ATTRIBUTE_DIRECTORY),
             ALL,
             FILE_CREATE,
             EnumSet.of(SMB2CreateOptions.FILE_DIRECTORY_FILE));
@@ -275,9 +275,9 @@ public class DiskShare extends Share {
         if (recursive) {
             List<FileIdBothDirectoryInformation> list = list(path);
             for (FileIdBothDirectoryInformation fi : list) {
-	            if (fi.getFileName().equals(".") || fi.getFileName().equals("..")) {
-		            continue;
-	            }
+                if (fi.getFileName().equals(".") || fi.getFileName().equals("..")) {
+                    continue;
+                }
                 String childPath = path + "\\" + fi.getFileName();
                 if (!EnumWithValue.EnumUtils.isSet(fi.getFileAttributes(), FILE_ATTRIBUTE_DIRECTORY)) {
                     rm(childPath);
@@ -294,7 +294,7 @@ public class DiskShare extends Share {
                 EnumSet.of(FILE_SHARE_DELETE, FILE_SHARE_WRITE, FILE_SHARE_READ),
                 FILE_OPEN,
                 EnumSet.of(SMB2CreateOptions.FILE_DIRECTORY_FILE)
-                )) {
+            )) {
                 e.deleteOnClose();
             }
         }
@@ -381,5 +381,10 @@ public class DiskShare extends Share {
             null,
             buffer.getCompactData()
         );
+    }
+
+    @Override
+    public String toString() {
+        return getClass().getSimpleName() + "[" + getSmbPath() + "]";
     }
 }

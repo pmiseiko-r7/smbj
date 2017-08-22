@@ -19,6 +19,7 @@ import com.hierynomus.protocol.commons.ByteArrayUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
@@ -27,8 +28,7 @@ import java.nio.charset.UnsupportedCharsetException;
 public class Buffer<T extends Buffer<T>> {
     private static final Logger logger = LoggerFactory.getLogger(Buffer.class);
 
-    public static class BufferException
-        extends Exception {
+    public static class BufferException extends Exception {
 
         public BufferException(String message) {
             super(message);
@@ -616,6 +616,40 @@ public class Buffer<T extends Buffer<T>> {
     }
 
     /**
+     * Read a null-terminated string in the specified encoding.
+     * <p/>
+     * If the charset is UTF-16, the buffer's endianness is used to determine the correct byte order.
+     *
+     * @param charset The charset to use.
+     * @throws BufferException             If reading this string would cause an underflow
+     * @throws UnsupportedCharsetException If the charset specified is not supported by the buffer.
+     */
+    public String readNullTerminatedString(Charset charset) throws BufferException {
+        return readNullTerminatedString(charset, endianness);
+    }
+
+    private String readNullTerminatedString(Charset charset, Endian endianness) throws BufferException {
+        switch (charset.name()) {
+            case "UTF-16":
+                return endianness.readNullTerminatedUtf16String(this);
+            case "UTF-16LE":
+                return Endian.LE.readNullTerminatedUtf16String(this);
+            case "UTF-16BE":
+                return Endian.BE.readNullTerminatedUtf16String(this);
+            case "UTF-8":
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                byte b = readByte();
+                while (b != 0) {
+                    baos.write(b);
+                    b = readByte();
+                }
+                return new String(baos.toByteArray(), charset);
+            default:
+                throw new UnsupportedCharsetException(charset.name());
+        }
+    }
+
+    /**
      * Write the string in the specified charset.
      * <p/>
      * If the charset is UTF-16, the buffer's endianness is used to determine the correct byte order.
@@ -649,6 +683,43 @@ public class Buffer<T extends Buffer<T>> {
         }
         return this;
     }
+
+    /**
+     * Write the string with an additional null-terminator in the specified charset.
+     * <p/>
+     * If the charset is UTF-16, the buffer's endianness is used to determine the correct byte order.
+     *
+     * @param string  The string to write
+     * @param charset The charset to use
+     * @return this
+     * @throws UnsupportedCharsetException If the charset specified is not supported by the buffer.
+     */
+    public Buffer<T> putNullTerminatedString(String string, Charset charset) {
+        return putNullTerminatedString(string, charset, endianness);
+    }
+
+    private Buffer<T> putNullTerminatedString(String string, Charset charset, Endian endianness) {
+        switch (charset.name()) {
+            case "UTF-16":
+                endianness.writeNullTerminatedUtf16String(this, string);
+                break;
+            case "UTF-16LE":
+                Endian.LE.writeNullTerminatedUtf16String(this, string);
+                break;
+            case "UTF-16BE":
+                Endian.BE.writeNullTerminatedUtf16String(this, string);
+                break;
+            case "UTF-8":
+                byte[] bytes = string.getBytes(charset);
+                putRawBytes(bytes);
+                putByte((byte) 0);
+                break;
+            default:
+                throw new UnsupportedCharsetException(charset.name());
+        }
+        return this;
+    }
+
 
     /**
      * Skip the specified number of bytes.

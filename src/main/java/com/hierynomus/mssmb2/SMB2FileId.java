@@ -17,7 +17,7 @@ package com.hierynomus.mssmb2;
 
 import com.hierynomus.protocol.commons.ByteArrayUtils;
 import com.hierynomus.protocol.commons.buffer.Buffer;
-import com.hierynomus.smbj.common.SMBBuffer;
+import com.hierynomus.smb.SMBBuffer;
 
 /**
  * [MS-SMB2].pdf 2.2.14.1 SMB2_FILEID
@@ -28,6 +28,11 @@ public class SMB2FileId {
 
     private byte[] volatileHandle;
 
+    public SMB2FileId() {
+        this.persistentHandle = new byte[]{(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff};
+        this.volatileHandle = new byte[]{(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff};
+    }
+    
     public SMB2FileId(byte[] persistentHandle, byte[] volatileHandle) {
         this.persistentHandle = persistentHandle;
         this.volatileHandle = volatileHandle;

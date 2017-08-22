@@ -26,6 +26,8 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static com.hierynomus.protocol.commons.IOUtils.closeSilently;
+
 /**
  * Server Message Block Client API.
  */
@@ -82,8 +84,13 @@ public class SMBClient {
         synchronized (this) {
             String hostPort = hostname + ":" + port;
             if (!connectionTable.containsKey(hostPort)) {
-                Connection connection = new Connection(config, bus);
-                connection.connect(hostname, port);
+                Connection connection = new Connection(config, this, bus);
+                try {
+                    connection.connect(hostname, port);
+                } catch (IOException e) {
+                    closeSilently(connection); // Quietly close broken connection.
+                    throw e;
+                }
                 connectionTable.put(hostPort, connection);
                 return connection;
             }
