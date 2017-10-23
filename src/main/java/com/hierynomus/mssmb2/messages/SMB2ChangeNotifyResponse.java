@@ -28,8 +28,7 @@ import java.util.List;
 
 /**
  * [MS-SMB2].pdf 2.2.36 SMB2 CHANGE_NOTIFY Response
- * <p>
- * \
+ *
  */
 public class SMB2ChangeNotifyResponse extends SMB2Packet {
 
@@ -48,6 +47,7 @@ public class SMB2ChangeNotifyResponse extends SMB2Packet {
     /**
      * [MS-SMB2].pdf 3.3.4.4
      * STATUS_NOTIFY_ENUM_DIR should be treated as a success code.
+     *
      * @param status The status to verify
      * @return
      */
@@ -71,8 +71,10 @@ public class SMB2ChangeNotifyResponse extends SMB2Packet {
             fileNameLen = buffer.readUInt32();
             fileName = buffer.readString(StandardCharsets.UTF_16LE, (int) fileNameLen / 2);
             notifyInfoList.add(new FileNotifyInfo(action, fileName));
-            currentPos += nextEntryOffset;
-            buffer.rpos(currentPos);
+            if (nextEntryOffset != 0) {
+                currentPos += nextEntryOffset;
+                buffer.rpos(currentPos);
+            }
         } while (nextEntryOffset != 0);
 
         return notifyInfoList;

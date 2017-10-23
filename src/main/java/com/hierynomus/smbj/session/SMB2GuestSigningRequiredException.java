@@ -13,18 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.hierynomus.security;
+package com.hierynomus.smbj.session;
 
-public interface Cipher {
-    enum CryptMode {ENCRYPT, DECRYPT}
+import com.hierynomus.smbj.common.SMBRuntimeException;
 
-    ;
-
-    void init(CryptMode cryptMode, byte[] bytes) throws SecurityException;
-
-    int update(byte[] in, int inOff, int bytes, byte[] out, int outOff) throws SecurityException;
-
-    int doFinal(byte[] out, int outOff) throws SecurityException;
-
-    void reset();
+public class SMB2GuestSigningRequiredException extends SMBRuntimeException {
+    public SMB2GuestSigningRequiredException() {
+        super("Cannot require message signing when authenticating with a guest account");
+    }
 }

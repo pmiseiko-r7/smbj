@@ -30,6 +30,7 @@ import com.hierynomus.protocol.transport.*;
 import com.hierynomus.smb.SMBPacket;
 import com.hierynomus.smbj.SMBClient;
 import com.hierynomus.smbj.SmbConfig;
+import com.hierynomus.smbj.auth.AuthenticateResponse;
 import com.hierynomus.smbj.auth.AuthenticationContext;
 import com.hierynomus.smbj.auth.Authenticator;
 import com.hierynomus.smbj.common.SMBRuntimeException;
@@ -66,6 +67,11 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
     private static final DelegatingSMBMessageConverter converter = new DelegatingSMBMessageConverter(new SMB2MessageConverter(), new SMB1MessageConverter());
 
     private ConnectionInfo connectionInfo;
+    private SessionTable sessionTable = new SessionTable();
+    private SessionTable preauthSessionTable = new SessionTable();
+    private OutstandingRequests outstandingRequests = new OutstandingRequests();
+    private SequenceWindow sequenceWindow;
+
     private String remoteName;
 
     private SMBClient client;
@@ -103,6 +109,7 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
         this.remoteName = hostname;
         this.remotePort = port;
         transport.connect(new InetSocketAddress(hostname, port));
+        this.sequenceWindow = new SequenceWindow();
         this.connectionInfo = new ConnectionInfo(config.getClientGuid(), hostname);
         negotiateDialect();
         logger.info("Successfully connected to: {}", getRemoteHostname());
@@ -123,7 +130,7 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
     public void close(boolean force) throws Exception {
         try {
             if (!force) {
-                for (Session session : connectionInfo.getSessionTable().activeSessions()) {
+                for (Session session : sessionTable.activeSessions()) {
                     try {
                         session.close();
                     } catch (IOException e) {
@@ -154,8 +161,8 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
             Session session = getSession(authContext);
             SMB2SessionSetup receive = authenticationRound(authenticator, authContext, connectionInfo.getGssNegotiateToken(), session);
             long sessionId = receive.getHeader().getSessionId();
-            session.init(receive);
-            connectionInfo.getPreauthSessionTable().registerSession(sessionId, session);
+            session.setSessionId(sessionId);
+            preauthSessionTable.registerSession(sessionId, session);
             try {
                 while (receive.getHeader().getStatus() == NtStatus.STATUS_MORE_PROCESSING_REQUIRED) {
                     logger.debug("More processing required for authentication of {} using {}", authContext.getUsername(), authenticator);
@@ -170,11 +177,12 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
                     // process the last received buffer
                     authenticator.authenticate(authContext, receive.getSecurityBuffer(), session);
                 }
+                session.init(receive);
                 logger.info("Successfully authenticated {} on {}, session is {}", authContext.getUsername(), remoteName, session.getSessionId());
-                connectionInfo.getSessionTable().registerSession(session.getSessionId(), session);
+                sessionTable.registerSession(session.getSessionId(), session);
                 return session;
             } finally {
-                connectionInfo.getPreauthSessionTable().sessionClosed(sessionId);
+                preauthSessionTable.sessionClosed(sessionId);
             }
         } catch (SpnegoException | IOException e) {
             throw new SMBRuntimeException(e);
@@ -182,17 +190,21 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
     }
 
     private Session getSession(AuthenticationContext authContext) {
-        return new Session(this, authContext, bus, connectionInfo.isServerRequiresSigning(), config.isDfsEnabled(), config.getSecurityProvider());
+        return new Session(this, authContext, bus, config.isDfsEnabled(), config.getSecurityProvider());
     }
 
     private SMB2SessionSetup authenticationRound(Authenticator authenticator, AuthenticationContext authContext, byte[] inputToken, Session session) throws IOException {
-        byte[] securityContext = authenticator.authenticate(authContext, inputToken, session);
-
-        SMB2SessionSetup req = new SMB2SessionSetup(connectionInfo.getNegotiatedProtocol().getDialect(), EnumSet.of(SMB2_NEGOTIATE_SIGNING_ENABLED), 
-                connectionInfo.getClientCapabilities());
+        AuthenticateResponse resp = authenticator.authenticate(authContext, inputToken, session);
+        connectionInfo.setWindowsVersion(resp.getWindowsVersion());
+        byte[] securityContext = resp.getNegToken();
+        if (resp.getSigningKey() != null) {
+            session.setSigningKey(resp.getSigningKey());
+        }
+        SMB2SessionSetup req = new SMB2SessionSetup(connectionInfo.getNegotiatedProtocol().getDialect(), EnumSet.of(SMB2_NEGOTIATE_SIGNING_ENABLED),
+            connectionInfo.getClientCapabilities());
         req.setSecurityBuffer(securityContext);
         req.getHeader().setSessionId(session.getSessionId());
-        return Futures.get(this.<SMB2SessionSetup>send(req), getConfig().getTransactTimeout(), TimeUnit.MILLISECONDS, TransportException.Wrapper);
+        return sendAndReceive(req);
     }
 
     private Authenticator getAuthenticator(AuthenticationContext context) throws IOException, SpnegoException {
@@ -225,18 +237,18 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
     public <T extends SMB2Packet> Future<T> send(SMB2Packet packet) throws TransportException {
         lock.lock();
         try {
-            int availableCredits = connectionInfo.getSequenceWindow().available();
+            int availableCredits = sequenceWindow.available();
             int grantCredits = calculateGrantedCredits(packet, availableCredits);
             if (availableCredits == 0) {
                 logger.warn("There are no credits left to send {}, will block until there are more credits available.", packet.getHeader().getMessage());
             }
-            long[] messageIds = connectionInfo.getSequenceWindow().get(grantCredits);
+            long[] messageIds = sequenceWindow.get(grantCredits);
             packet.getHeader().setMessageId(messageIds[0]);
             logger.debug("Granted {} (out of {}) credits to {}", grantCredits, availableCredits, packet);
             packet.getHeader().setCreditRequest(Math.max(SequenceWindow.PREFERRED_MINIMUM_CREDITS - availableCredits - grantCredits, grantCredits));
 
             Request request = new Request(packet.getHeader().getMessageId(), UUID.randomUUID());
-            connectionInfo.getOutstandingRequests().registerOutstanding(request);
+            outstandingRequests.registerOutstanding(request);
             transport.write(packet);
             return request.getFuture(new CancelRequest(request));
         } finally {
@@ -287,18 +299,17 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
 
     private SMB2Packet smb2OnlyNegotiate() throws TransportException {
         SMB2Packet negotiatePacket = new SMB2NegotiateRequest(config.getSupportedDialects(), connectionInfo.getClientGuid(), config.isSigningRequired());
-        Future<SMB2Packet> send = send(negotiatePacket);
-        return Futures.get(send, getConfig().getTransactTimeout(), TimeUnit.MILLISECONDS, TransportException.Wrapper);
+        return sendAndReceive(negotiatePacket);
     }
 
     private SMB2Packet multiProtocolNegotiate() throws TransportException {
         SMB1Packet negotiatePacket = new SMB1ComNegotiateRequest(config.getSupportedDialects());
-        long l = connectionInfo.getSequenceWindow().get();
+        long l = sequenceWindow.get();
         if (l != 0) {
             throw new IllegalStateException("The SMBv1 SMB_COM_NEGOTIATE packet needs to be the first packet sent.");
         }
         Request request = new Request(l, UUID.randomUUID());
-        connectionInfo.getOutstandingRequests().registerOutstanding(request);
+        outstandingRequests.registerOutstanding(request);
         transport.write(negotiatePacket);
         Future<SMB2Packet> future = request.getFuture(null);
         SMB2Packet packet = Futures.get(future, getConfig().getTransactTimeout(), TimeUnit.MILLISECONDS, TransportException.Wrapper);
@@ -338,15 +349,15 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
         SMB2Packet packet = (SMB2Packet) uncheckedPacket;
         long messageId = packet.getSequenceNumber();
 
-        if (!connectionInfo.getOutstandingRequests().isOutstanding(messageId)) {
+        if (!outstandingRequests.isOutstanding(messageId)) {
             throw new TransportException("Received response with unknown sequence number <<" + messageId + ">>");
         }
 
         // [MS-SMB2].pdf 3.2.5.1.4 Granting Message Credits
-        connectionInfo.getSequenceWindow().creditsGranted(packet.getHeader().getCreditResponse());
-        logger.debug("Server granted us {} credits for {}, now available: {} credits", packet.getHeader().getCreditResponse(), packet, connectionInfo.getSequenceWindow().available());
+        sequenceWindow.creditsGranted(packet.getHeader().getCreditResponse());
+        logger.debug("Server granted us {} credits for {}, now available: {} credits", packet.getHeader().getCreditResponse(), packet, sequenceWindow.available());
 
-        Request request = connectionInfo.getOutstandingRequests().getRequestByMessageId(messageId);
+        Request request = outstandingRequests.getRequestByMessageId(messageId);
         logger.trace("Send/Recv of packet {} took << {} ms >>", packet, System.currentTimeMillis() - request.getTimestamp().getTime());
 
         // [MS-SMB2].pdf 3.2.5.1.5 Handling Asynchronous Responses
@@ -364,10 +375,10 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
         }
 
         if (packet.getHeader().getSessionId() != 0 && (packet.getHeader().getMessage() != SMB2MessageCommandCode.SMB2_SESSION_SETUP)) {
-            Session session = connectionInfo.getSessionTable().find(packet.getHeader().getSessionId());
+            Session session = sessionTable.find(packet.getHeader().getSessionId());
             if (session == null) {
                 // check for a not-yet-authenticated session
-                session = connectionInfo.getPreauthSessionTable().find(packet.getHeader().getSessionId());
+                session = preauthSessionTable.find(packet.getHeader().getSessionId());
                 if (session == null) {
                     logger.warn("Illegal request, no session matching the sessionId: {}", packet.getHeader().getSessionId());
                     //TODO maybe tear down the connection?
@@ -380,26 +391,26 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
         }
 
         // [MS-SMB2].pdf 3.2.5.1.8 Processing the Response
-        connectionInfo.getOutstandingRequests().receivedResponseFor(messageId).getPromise().deliver(packet);
+        outstandingRequests.receivedResponseFor(messageId).getPromise().deliver(packet);
     }
 
     private void verifyPacketSignature(SMB2Packet packet, Session session) throws TransportException {
         if (packet.getHeader().isFlagSet(SMB2MessageFlag.SMB2_FLAGS_SIGNED)) {
             if (!session.getPacketSignatory().verify(packet)) {
                 logger.warn("Invalid packet signature for packet {}", packet);
-                if (config.isSigningRequired()) {
+                if (session.isSigningRequired()) {
                     throw new TransportException("Packet signature for packet " + packet + " was not correct");
                 }
             }
-        } else if (config.isSigningRequired()) {
-            logger.warn("Illegal request, client requires message signing, but packet {} is not signed.", packet);
-            throw new TransportException("Client requires signing, but packet " + packet + " was not signed");
+        } else if (session.isSigningRequired()) {
+            logger.warn("Illegal request, session requires message signing, but packet {} is not signed.", packet);
+            throw new TransportException("Session requires signing, but packet " + packet + " was not signed");
         }
     }
 
     @Override
     public void handleError(Throwable t) {
-        connectionInfo.getOutstandingRequests().handleError(t);
+        outstandingRequests.handleError(t);
         try {
             this.close();
         } catch (Exception e) {
@@ -416,10 +427,14 @@ public class Connection implements AutoCloseable, PacketReceiver<SMBPacket<?>> {
         return transport.isConnected();
     }
 
+    public ConnectionInfo getConnectionInfo() {
+        return connectionInfo;
+    }
+
     @Handler
     @SuppressWarnings("unused")
     private void sessionLogoff(SessionLoggedOff loggedOff) {
-        connectionInfo.getSessionTable().sessionClosed(loggedOff.getSessionId());
+        sessionTable.sessionClosed(loggedOff.getSessionId());
         logger.debug("Session << {} >> logged off", loggedOff.getSessionId());
     }
 

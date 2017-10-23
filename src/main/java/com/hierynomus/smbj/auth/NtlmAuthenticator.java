@@ -64,15 +64,17 @@ public class NtlmAuthenticator implements Authenticator {
     private boolean completed = false;
 
     @Override
-    public byte[] authenticate(final AuthenticationContext context, final byte[] gssToken, Session session) throws IOException {
+    public AuthenticateResponse authenticate(final AuthenticationContext context, final byte[] gssToken, Session session) throws IOException {
         try {
+            AuthenticateResponse response = new AuthenticateResponse();
             if (completed) {
                 return null;
             } else if (!initialized) {
                 logger.debug("Initialized Authentication of {} using NTLM", context.getUsername());
                 NtlmNegotiate ntlmNegotiate = new NtlmNegotiate();
                 initialized = true;
-                return negTokenInit(ntlmNegotiate);
+                response.setNegToken(negTokenInit(ntlmNegotiate));
+                return response;
             } else {
                 logger.debug("Received token: {}", ByteArrayUtils.printHex(gssToken));
                 NtlmFunctions ntlmFunctions = new NtlmFunctions(random, securityProvider);
@@ -86,6 +88,7 @@ public class NtlmAuthenticator implements Authenticator {
                 }
                 logger.debug("Received NTLM challenge from: {}", challenge.getTargetName());
 
+                response.setWindowsVersion(challenge.getVersion());
                 byte[] serverChallenge = challenge.getServerChallenge();
                 byte[] responseKeyNT = ntlmFunctions.NTOWFv2(String.valueOf(context.getPassword()), context.getUsername(), context.getDomain());
                 byte[] ntlmv2ClientChallenge = ntlmFunctions.getNTLMv2ClientChallenge(challenge.getTargetInfo());
@@ -102,10 +105,10 @@ public class NtlmAuthenticator implements Authenticator {
                     byte[] masterKey = new byte[16];
                     random.nextBytes(masterKey);
                     sessionkey = ntlmFunctions.encryptRc4(userSessionKey, masterKey);
-                    session.setSigningKey(masterKey);
+                    response.setSigningKey(masterKey);
                 } else {
                     sessionkey = userSessionKey;
-                    session.setSigningKey(sessionkey);
+                    response.setSigningKey(sessionkey);
                 }
 
                 completed = true;
@@ -114,7 +117,7 @@ public class NtlmAuthenticator implements Authenticator {
 
                 // MIC (16 bytes) provided if in AvPairType is key MsvAvFlags with value & 0x00000002 is true
                 Object msvAvFlags = challenge.getAvPairObject(AvId.MsvAvFlags);
-                if (msvAvFlags != null && ((int) msvAvFlags & 0x00000002) > 0) {
+                if (msvAvFlags instanceof Long && ((long) msvAvFlags & 0x00000002) > 0) {
                     // MIC should be calculated
                     NtlmAuthenticate resp = new NtlmAuthenticate(new byte[0], ntlmv2Response,
                         context.getUsername(), context.getDomain(), null, sessionkey, EnumWithValue.EnumUtils.toLong(negotiateFlags),
@@ -130,13 +133,15 @@ public class NtlmAuthenticator implements Authenticator {
 
                     byte[] mic = ntlmFunctions.hmac_md5(userSessionKey, concatenatedBuffer.getCompactData());
                     resp.setMic(mic);
-                    return negTokenTarg(resp, negTokenTarg.getResponseToken());
+                    response.setNegToken(negTokenTarg(resp, negTokenTarg.getResponseToken()));
+                    return response;
                 } else {
                     NtlmAuthenticate resp = new NtlmAuthenticate(new byte[0], ntlmv2Response,
                         context.getUsername(), context.getDomain(), null, sessionkey, EnumWithValue.EnumUtils.toLong(negotiateFlags),
                         false
                     );
-                    return negTokenTarg(resp, negTokenTarg.getResponseToken());
+                    response.setNegToken(negTokenTarg(resp, negTokenTarg.getResponseToken()));
+                    return response;
                 }
             }
         } catch (SpnegoException spne) {

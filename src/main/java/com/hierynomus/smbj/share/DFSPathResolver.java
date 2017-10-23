@@ -345,7 +345,7 @@ public class DFSPathResolver {
             Connection oldConnection = session.getConnection();
             Connection connection;
             try {
-                connection = oldConnection.getClient().connect(hostName, 451); // TODO
+                connection = oldConnection.getClient().connect(hostName); // TODO
             } catch (IOException e) {
                 throw new DFSException(e);
             }
@@ -397,7 +397,7 @@ public class DFSPathResolver {
         if (response.getReferralEntries().isEmpty()) {
             result.status = NtStatus.STATUS_OBJECT_PATH_NOT_FOUND;
         }
-        ReferralCache.ReferralCacheEntry referralCacheEntry = new ReferralCache.ReferralCacheEntry(response);
+        ReferralCache.ReferralCacheEntry referralCacheEntry = new ReferralCache.ReferralCacheEntry(response, domainCache);
         referralCache.put(referralCacheEntry);
         result.referralCacheEntry = referralCacheEntry;
     }
